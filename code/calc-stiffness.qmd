@@ -1,0 +1,230 @@
+---
+title: Continuum Isotropy from the Spherical 5-Design Geometry of the 24-Cell-Lattice
+abstract: |
+    Numerical analysis accompanying the manuscript:
+
+        "Continuum Isotropy from the Spherical 5-Design Geometry of the 24-Cell-Lattice"
+
+    This code evaluates kinematic and elastic isotropy properties of
+    regular four-dimensional lattices, with emphasis on the hypercubic
+    lattice (Z^4) and the 24-cell lattice (D4).
+
+    All computations are performed in Euclidean signature using
+    nearest-neighbor central-force models. Results probe the infrared
+    (continuum) behavior relevant for emergent Lorentz-invariant
+    kinematics.
+author: Christoph Kovacs
+date: 2025-12-18
+---
+
+```{python}
+"""
+Figure 4: Elastic Stiffness and Macroscopic Isotropy
+
+This script computes the rank-4 elastic stiffness tensor
+    C_ijkl = Σ_v v_i v_j v_k v_l
+for nearest-neighbor central-force interactions on regular 4D lattices.
+
+It evaluates:
+1. The standard Voigt components (C11, C12, C44) assuming cubic alignment.
+2. The Zener Ratio 'A' (Standard metric for cubic crystals).
+3. The Relative Elastic Anisotropy 'delta_F' (Frobenius norm), which is
+   the rigorous metric defined in the paper valid for ALL geometries.
+
+Results validate the analytical findings:
+    • Z^4: Maximally anisotropic (delta_F = 1.0)
+    • A_4: Partially anisotropic (delta_F ~ 0.316), fails Rank-4 isotropy.
+    • D_4: Perfectly isotropic (delta_F = 0.0), A = 1.0.
+
+This confirms that the spherical 5-design property is the necessary condition
+for a Lorentz-invariant elastic vacuum.
+"""
+import numpy as np
+import matplotlib.pyplot as plt
+import itertools
+
+# ============================================================
+# Lattice Generators (Normalized)
+# ============================================================
+
+def normalize_rows(mat):
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    return mat / norms
+
+def neighbors_Z4():
+    """Hypercubic: Permutations of (1,0,0,0)"""
+    vecs = []
+    for i in range(4):
+        v = np.zeros(4); v[i] = 1.0
+        vecs.append(v); vecs.append(-v)
+    return np.array(vecs)
+
+def neighbors_D4():
+    """24-cell: Permutations of (1,1,0,0)"""
+    vecs = []
+    for i in range(4):
+        for j in range(i + 1, 4):
+            for s1 in [1, -1]:
+                for s2 in [1, -1]:
+                    v = np.zeros(4); v[i] = s1; v[j] = s2
+                    vecs.append(v)
+    return normalize_rows(np.array(vecs))
+
+def neighbors_A4():
+    """Simplex: Projected from 5D"""
+    base = [1, -1, 0, 0, 0]
+    perms = set(itertools.permutations(base))
+    vecs_5d = np.array(list(perms), dtype=float)
+    
+    # 5D -> 4D Orthonormal Basis
+    basis = np.array([
+        [1/np.sqrt(2), -1/np.sqrt(2), 0, 0, 0],
+        [1/np.sqrt(6), 1/np.sqrt(6), -2/np.sqrt(6), 0, 0],
+        [1/np.sqrt(12), 1/np.sqrt(12), 1/np.sqrt(12), -3/np.sqrt(12), 0],
+        [1/np.sqrt(20), 1/np.sqrt(20), 1/np.sqrt(20), 1/np.sqrt(20), -4/np.sqrt(20)]
+    ])
+    return normalize_rows(vecs_5d @ basis.T)
+
+# ============================================================
+# Tensor Analysis Tools
+# ============================================================
+
+def stiffness_tensor(neighbors):
+    """Computes Rank-4 Tensor C = sum v_i v_j v_k v_l"""
+    # Outer product v^4
+    # Shape: (N, 4, 4, 4, 4) -> sum over N
+    v = neighbors
+    return np.einsum("ni,nj,nk,nl->ijkl", v, v, v, v)
+
+def get_isotropic_projection(C):
+    """
+    Projects a general Rank-4 tensor onto the isotropic subspace in 4D.
+    C_iso = a * delta_ij delta_kl + b * (delta_ik delta_jl + delta_il delta_jk)
+    """
+    dim = 4.0
+    # Tensor contractions (invariants)
+    Tr1 = np.einsum("iijj", C) # Trace of trace
+    Tr2 = np.einsum("ijij", C) # Double contraction
+    
+    # Solve linear system for a and b (Lamé-like parameters) derived from traces
+    # Eq 1: Tr1 = a*d^2 + 2*b*d
+    # Eq 2: Tr2 = a*d + b*(d^2 + d)
+    # Solution for d=4:
+    b = (4.0 * Tr2 - Tr1) / 72.0
+    a = (Tr1 - 8.0 * b) / 16.0
+    
+    # Construct Isotropic Tensor
+    delta = np.eye(4)
+    term1 = np.einsum("ij,kl->ijkl", delta, delta)
+    term2 = np.einsum("ik,jl->ijkl", delta, delta) + \
+            np.einsum("il,jk->ijkl", delta, delta)
+            
+    C_iso = a * term1 + b * term2
+    return C_iso
+
+def compute_anisotropy_metrics(C):
+    """Returns (C11, C12, C44, Zener_A, Delta_F)"""
+    # 1. Voigt Components (Assuming alignment with axes)
+    C11 = C[0,0,0,0]
+    C12 = C[0,0,1,1]
+    C44 = C[0,1,0,1]
+    
+    # 2. Zener Ratio
+    denom = C11 - C12
+    if abs(denom) < 1e-10:
+        A = 999.9 # Infinity indicator
+    else:
+        A = 2.0 * C44 / denom
+        
+    # 3. Frobenius Anisotropy delta_F (Coordinate Independent)
+    C_iso = get_isotropic_projection(C)
+    diff = C - C_iso
+    norm_diff = np.sqrt(np.sum(diff**2))
+    norm_iso = np.sqrt(np.sum(C_iso**2))
+    
+    delta_F = norm_diff / norm_iso
+    return C11, C12, C44, A, delta_F
+
+# ============================================================
+# Main Analysis Loop
+# ============================================================
+
+lattices = {
+    "Z4": neighbors_Z4(),
+    "A4": neighbors_A4(),
+    "D4": neighbors_D4()
+}
+
+results_plot = {} # For Bar Chart
+results_text = {} # For Console Report
+
+print(f"{'Lattice':<10} | {'delta_F':<10} | {'Zener A':<10} | {'C11':<8} {'C12':<8} {'C44':<8}")
+print("-" * 65)
+
+for name, vec in lattices.items():
+    C = stiffness_tensor(vec)
+    c11, c12, c44, A, dF = compute_anisotropy_metrics(C)
+    
+    results_text[name] = (dF, A)
+    results_plot[name] = (c11, c12, c44)
+    
+    print(f"{name:<10} | {dF:.6f}   | {A:.6f}   | {c11:.2f}     {c12:.2f}     {c44:.2f}")
+
+print("-" * 65)
+
+# ============================================================
+# Plotting
+# ============================================================
+# Note: For A4, C11/C12/C44 depend on orientation.
+# We plot them to show the contrast in "Stiffness distribution".
+
+labels = [r"$C_{11}$ (Axial)", r"$C_{12}$ (Cross)", r"$C_{44}$ (Shear)"]
+x = np.arange(len(labels))
+width = 0.25
+
+fig, ax = plt.subplots(figsize=(8, 5))
+
+# Plot bars
+colors = ["#1f77b4", "#2ca02c", "#ff7f0e"] # Blue, Green, Orange
+names = ["Z4", "A4", "D4"]
+latex_names = [r"$\mathbb{Z}^4$", r"$A_4$", r"$D_4$"]
+
+for i, name in enumerate(names):
+    vals = results_plot[name]
+    # Normalize bars for visual comparison (so max bar is 1.0)
+    # This emphasizes the *ratio* C11:C12:C44 rather than density
+    vals = np.array(vals) / np.max(vals)
+    
+    ax.bar(x + (i-1)*width, vals, width, label=latex_names[i], color=colors[i])
+
+# Styling
+ax.set_xticks(x)
+ax.set_xticklabels(labels)
+ax.set_ylabel("Normalized Stiffness (Ratio)")
+ax.set_title("Stiffness Tensor Components ($C_{ijkl}$)")
+ax.legend(frameon=False)
+ax.grid(axis="y", ls=":", lw=0.6, alpha=0.5)
+
+# Annotation for Isotropy Condition
+# Isotropy requires C11 = C12 + 2*C44.
+# For D4 (Orange): C11=3, C12=1, C44=1 -> 3 = 1 + 2(1). Holds.
+# For Z4 (Blue):   C11=1, C12=0, C44=0 -> 1 != 0. Fails.
+ax.text(1.5, 0.9, r"Isotropy Condition:" + "\n" + r"$C_{11} = C_{12} + 2C_{44}$", 
+        bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
+
+plt.tight_layout()
+plt.show()
+
+# ============================================================
+# Assertions for Manuscript Claims
+# ============================================================
+# 1. Z4 delta_F should be exactly 1.0
+assert abs(results_text["Z4"][0] - 1.0) < 1e-9
+# 2. D4 delta_F should be 0.0
+assert results_text["D4"][0] < 1e-14
+# 3. A4 delta_F should be ~0.316 (1/sqrt(10))
+expected_A4 = 1.0/np.sqrt(10.0)
+assert abs(results_text["A4"][0] - expected_A4) < 1e-9
+
+print("\n>> All manuscript claims verified numerically.")
+```

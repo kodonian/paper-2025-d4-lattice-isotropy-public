@@ -1,0 +1,376 @@
+---
+title: Continuum Isotropy from the Spherical 5-Design Geometry of the 24-Cell-Lattice
+abstract: |
+    Numerical analysis accompanying the manuscript:
+
+        "Continuum Isotropy from the Spherical 5-Design Geometry of the 24-Cell-Lattice"
+
+    This code evaluates kinematic and elastic isotropy properties of
+    regular four-dimensional lattices, with emphasis on the hypercubic
+    lattice (Z^4) and the 24-cell lattice (D4).
+
+    All computations are performed in Euclidean signature using
+    nearest-neighbor central-force models. Results probe the infrared
+    (continuum) behavior relevant for emergent Lorentz-invariant
+    kinematics.
+author: Christoph Kovacs
+date: 2025-12-18
+---
+
+
+
+```{python}
+"""
+Compute (and compare) elastic isotropy metrics for 4D lattices from a central-force
+nearest-neighbor spring model.
+
+- Supports:
+  * A4 simplex / root system neighbors (20 directions = ±(e_i - e_j), i<j, in 5D projected to 4D)
+  * D4 (24 directions = permutations of (±1, ±1, 0, 0))
+
+- Outputs:
+  * Stiffness tensor C_ijkl (4D)
+  * Best-fit isotropic Lamé parameters (lambda, mu) via least squares projection
+  * Relative elastic anisotropy ||C - C_iso|| / ||C_iso||
+  * Check whether cubic term exists or Zener scale is applicable
+  * Optional: basis invariance checks and normalization controls
+
+Notes:
+- "Zener ratio" is not canonically defined in 4D for general anisotropy (it's a 3D cubic metric).
+  Here we use a robust, basis-invariant tensor norm anisotropy measure.
+"""
+
+from __future__ import annotations
+import numpy as np
+from itertools import permutations, product
+from dataclasses import dataclass
+
+
+# ----------------------------
+# Utilities
+# ----------------------------
+
+def fro_norm(t: np.ndarray) -> float:
+    return float(np.sqrt(np.sum(t * t)))
+
+def sym_delta(i: int, j: int) -> int:
+    return 1 if i == j else 0
+
+def make_isotropic_tensor_4d(lam: float, mu: float, dim: int = 4) -> np.ndarray:
+    """
+    C_ijkl = lam * δ_ij δ_kl + mu * (δ_ik δ_jl + δ_il δ_jk)
+    """
+    C = np.zeros((dim, dim, dim, dim), dtype=float)
+    for i in range(dim):
+        for j in range(dim):
+            for k in range(dim):
+                for l in range(dim):
+                    C[i, j, k, l] = (
+                        lam * sym_delta(i, j) * sym_delta(k, l)
+                        + mu * (sym_delta(i, k) * sym_delta(j, l) + sym_delta(i, l) * sym_delta(j, k))
+                    )
+    return C
+
+def project_to_isotropic(C: np.ndarray) -> tuple[float, float, np.ndarray]:
+    """
+    Find lam, mu minimizing ||C - (lam*Tlam + mu*Tmu)||_F in 4D.
+    Returns lam, mu, C_iso.
+    """
+    dim = C.shape[0]
+    Tlam = make_isotropic_tensor_4d(1.0, 0.0, dim=dim)
+    Tmu  = make_isotropic_tensor_4d(0.0, 1.0, dim=dim)
+
+    a11 = np.tensordot(Tlam, Tlam, axes=C.ndim)
+    a12 = np.tensordot(Tlam, Tmu,  axes=C.ndim)
+    a22 = np.tensordot(Tmu,  Tmu,  axes=C.ndim)
+    b1  = np.tensordot(Tlam, C,    axes=C.ndim)
+    b2  = np.tensordot(Tmu,  C,    axes=C.ndim)
+
+    A = np.array([[a11, a12], [a12, a22]], dtype=float)
+    b = np.array([b1, b2], dtype=float)
+    lam, mu = np.linalg.solve(A, b)
+
+    Ciso = lam * Tlam + mu * Tmu
+    return float(lam), float(mu), Ciso
+
+def anisotropy_metrics(C: np.ndarray) -> dict:
+    lam, mu, Ciso = project_to_isotropic(C)
+    num = fro_norm(C - Ciso)
+    den = fro_norm(Ciso) if fro_norm(Ciso) > 0 else np.nan
+    return {
+        "lambda": lam,
+        "mu": mu,
+        "rel_anisotropy": num / den,
+        "C": C,
+        "C_iso": Ciso,
+    }
+
+
+# ----------------------------
+# Lattice neighbor sets (4D)
+# ----------------------------
+
+def neighbors_D4() -> np.ndarray:
+    """
+    24 nearest-neighbor directions in 4D:
+    permutations of (±1, ±1, 0, 0).
+    """
+    base = (1, 1, 0, 0)
+    vecs = set()
+    for perm in set(permutations(base)):
+        for s1, s2 in product([1, -1], repeat=2):
+            v = list(perm)
+            # apply signs to the two nonzero entries
+            idx = [i for i, x in enumerate(v) if x != 0]
+            v[idx[0]] *= s1
+            v[idx[1]] *= s2
+            vecs.add(tuple(v))
+    V = np.array(sorted(vecs), dtype=float)
+    assert V.shape == (24, 4), V.shape
+    return V
+
+def neighbors_A4_simplex_root_20() -> np.ndarray:
+    """
+    A4 root system in 5D: vectors e_i - e_j (i != j), total 20.
+    Embed into 4D by restricting to the hyperplane sum(x)=0 and choosing an
+    orthonormal basis for that 4D subspace.
+
+    This yields 20 neighbor directions (already includes ±).
+    """
+    # Build 20 roots in R^5
+    roots = []
+    for i in range(5):
+        for j in range(5):
+            if i == j:
+                continue
+            v = np.zeros(5)
+            v[i] = 1.0
+            v[j] = -1.0
+            roots.append(v)
+    R = np.stack(roots, axis=0)  # (20,5)
+    assert R.shape == (20, 5)
+
+    # Orthonormal basis for subspace sum(x)=0 in R^5
+    # One clean way: take 5x4 matrix whose columns span sum=0, then QR.
+    # Start with simple spanning set: u_k = e_k - e_4 for k=0..3
+    U = np.zeros((5, 4), dtype=float)
+    for k in range(4):
+        U[k, k] = 1.0
+        U[4, k] = -1.0
+    # Orthonormalize columns
+    Q, _ = np.linalg.qr(U)  # Q: (5,4), orthonormal columns
+
+    # Project roots into this 4D basis: coordinates = Q^T v
+    V4 = (R @ Q)  # (20,4)
+    assert V4.shape == (20, 4)
+
+    return V4
+
+def neighbors_Z4_hypercubic() -> np.ndarray:
+    """
+    8 nearest neighbors in 4D: ±e_1, ±e_2, ±e_3, ±e_4.
+    """
+    dim = 4
+    vecs = []
+    for i in range(dim):
+        # +e_i
+        v_plus = np.zeros(dim)
+        v_plus[i] = 1.0
+        vecs.append(v_plus)
+        # -e_i
+        v_minus = np.zeros(dim)
+        v_minus[i] = -1.0
+        vecs.append(v_minus)
+        
+    return np.array(vecs)
+
+# ----------------------------
+# Central-force spring stiffness model
+# ----------------------------
+
+@dataclass
+class SpringModelConfig:
+    spring_constant: float = 1.0
+    mass_density: float = 1.0  # not used in stiffness, but kept for consistency
+    normalize_nn_length: float = 1.0  # rescale neighbor vectors to this length
+    normalize_second_moment: bool = False  # optional alt normalization
+
+def stiffness_from_neighbors(V: np.ndarray, cfg: SpringModelConfig) -> np.ndarray:
+    """
+    For central springs on bonds along unit direction n with bond length absorbed into scaling,
+    the rank-4 stiffness scales like sum_bonds n_i n_j n_k n_l (up to an overall factor).
+    We build:
+        C_ijkl = K * Σ n_i n_j n_k n_l
+    where n are normalized directions after chosen normalization.
+    """
+    V = np.array(V, dtype=float)
+
+    # Normalize each neighbor to desired length (default: unit length)
+    lens = np.linalg.norm(V, axis=1)
+    if np.any(lens == 0):
+        raise ValueError("Zero-length neighbor vector found.")
+    Vn = V / lens[:, None]
+    if cfg.normalize_nn_length is not None:
+        Vn = Vn * float(cfg.normalize_nn_length)
+
+    # Optional: normalize overall scale so that second moment matches δ_ij (up to constant)
+    # i.e. Σ n_i n_j ∝ δ_ij. We can rescale Vn by a single factor to set average trace.
+    if cfg.normalize_second_moment:
+        M2 = np.einsum("a i, a j -> i j", Vn, Vn)  # Σ n_i n_j
+        dim = Vn.shape[1]
+        target_trace = float(dim)  # trace(δ)=dim
+        scale = np.sqrt(target_trace / np.trace(M2))
+        Vn = Vn * scale
+
+    dim = Vn.shape[1]
+    C = cfg.spring_constant * np.einsum("a i, a j, a k, a l -> i j k l", Vn, Vn, Vn, Vn)
+    # Note: this C is symmetric under i<->j, k<->l, and (ij)<->(kl) automatically.
+
+    return C
+
+# -----------------------------------
+# Check cubic and Zener applicability
+# -----------------------------------
+
+def check_cubic_and_zener(C: np.ndarray, tol: float = 1e-6) -> dict:
+    """
+    Checks if the tensor C aligns with cubic symmetry axes and computes Zener ratio if valid.
+    
+    Logic:
+      1. Extract candidate cubic constants by averaging appropriate slots:
+         c11 ~ mean(C_iiii)
+         c12 ~ mean(C_iijj) for i != j
+         c44 ~ mean(C_ijij) for i != j
+      2. Construct C_cubic from these constants.
+      3. Measure relative error ||C - C_cubic|| / ||C||.
+      4. If error < tol, compute Zener ratio A = 2*C44 / (C11 - C12).
+    """
+    dim = C.shape[0]
+    
+    # 1. Extract averaged constants
+    # C11: diagonals
+    c11_vals = [C[i, i, i, i] for i in range(dim)]
+    c11_avg = np.mean(c11_vals)
+    
+    # C12: off-diagonal normal stresses
+    c12_vals = []
+    # C44: shear stresses
+    c44_vals = []
+    
+    for i in range(dim):
+        for j in range(dim):
+            if i == j: continue
+            c12_vals.append(C[i, i, j, j])
+            c44_vals.append(C[i, j, i, j])
+            
+    c12_avg = np.mean(c12_vals)
+    c44_avg = np.mean(c44_vals)
+    
+    # 2. Reconstruct ideal cubic tensor
+    C_cub = np.zeros_like(C)
+    for i in range(dim):
+        for j in range(dim):
+            for k in range(dim):
+                for l in range(dim):
+                    # C11 case
+                    if i==j and j==k and k==l:
+                        C_cub[i,j,k,l] = c11_avg
+                    # C12 case (i==j, k==l, i!=k)
+                    elif i==j and k==l:
+                        C_cub[i,j,k,l] = c12_avg
+                    # C44 case (i==k, j==l, i!=j) ... symmetric part C_ijij = C_ijji etc
+                    # Note: Elastic tensor symmetries C_ijkl = C_jikl = C_ijlk
+                    # Standard Voigt shear index is usually C_ijij
+                    elif (i==k and j==l and i!=j) or (i==l and j==k and i!=j):
+                        C_cub[i,j,k,l] = c44_avg
+    
+    # 3. Measure deviation
+    diff_norm = fro_norm(C - C_cub)
+    base_norm = fro_norm(C)
+    cubic_violation = diff_norm / base_norm if base_norm > 0 else 0.0
+    
+    is_cubic = cubic_violation < tol
+    
+    zener = None
+    if is_cubic:
+        denominator = c11_avg - c12_avg
+        if abs(denominator) < 1e-12:
+            zener = float('inf') # Avoid division by zero
+        else:
+            zener = (2.0 * c44_avg) / denominator
+
+    return {
+        "c11": c11_avg,
+        "c12": c12_avg,
+        "c44": c44_avg,
+        "cubic_violation": cubic_violation,
+        "is_cubic": is_cubic,
+        "zener_ratio": zener
+    }
+
+# ----------------------------
+# Main: compare lattices
+# ----------------------------
+
+def summarize(name: str, V: np.ndarray, cfg: SpringModelConfig) -> None:
+    C = stiffness_from_neighbors(V, cfg)
+    m = anisotropy_metrics(C)
+    cub = check_cubic_and_zener(C) # <--- NEUER AUFRUF
+
+    print(f"\n=== {name} ===")
+    print(f"neighbors: {V.shape[0]}  (dim={V.shape[1]})")
+
+    # Print NN length stats (optional, as before)
+    # ... (dein Code für lengths) ...
+
+    print(f"best-fit Lamé: lambda={m['lambda']:.5f}, mu={m['mu']:.5f}")
+    print(f"Tensor Isotropy Violation (Frobenius): {m['rel_anisotropy']:.4e}")
+
+    # Neuer Block für Zener
+    print(f"Cubic Symmetry Violation: {cub['cubic_violation']:.4e}")
+    if cub['is_cubic']:
+        print(f"-> Tensor is Cubic. Zener Ratio A = {cub['zener_ratio']:.6f}")
+    else:
+        print(f"-> Tensor is NOT Cubic aligned. Zener Ratio is undefined/invalid.")
+
+def main() -> None:
+    cfg = SpringModelConfig(
+        spring_constant=1.0,
+        normalize_nn_length=1.0,      # compare using unit direction vectors
+        normalize_second_moment=True  # also match overall second-moment scale across lattices
+    )
+
+    V_Z4 = neighbors_Z4_hypercubic()
+    V_A4 = neighbors_A4_simplex_root_20()
+    V_D4 = neighbors_D4()
+
+    summarize("Z4 (Hypercubic) nearest neighbors", V_Z4, cfg)
+    summarize("A4 (simplex root system) nearest neighbors", V_A4, cfg)
+    summarize("D4 (24-cell / FCHC) nearest neighbors", V_D4, cfg)
+
+if __name__ == "__main__":
+    main()
+```
+
+<!-- 
+=== Z4 (Hypercubic) nearest neighbors ===
+neighbors: 8  (dim=4)
+best-fit Lamé: lambda=0.08333, mu=0.08333
+Tensor Isotropy Violation (Frobenius): 1.0000e+00
+Cubic Symmetry Violation: 0.0000e+00
+-> Tensor is Cubic. Zener Ratio A = 0.000000
+
+=== A4 (simplex root system) nearest neighbors ===
+neighbors: 20  (dim=4)
+best-fit Lamé: lambda=0.03333, mu=0.03333
+Tensor Isotropy Violation (Frobenius): 3.1623e-01
+Cubic Symmetry Violation: 2.6100e-01
+-> Tensor is NOT Cubic aligned. Zener Ratio is undefined/invalid.
+
+=== D4 (24-cell / FCHC) nearest neighbors ===
+neighbors: 24  (dim=4)
+best-fit Lamé: lambda=0.02778, mu=0.02778
+Tensor Isotropy Violation (Frobenius): 7.2111e-17
+Cubic Symmetry Violation: 8.8318e-17
+-> Tensor is Cubic. Zener Ratio A = 1.000000
+-->

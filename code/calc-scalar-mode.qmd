@@ -1,0 +1,231 @@
+---
+title: Continuum Isotropy from the Spherical 5-Design Geometry of the 24-Cell-Lattice
+abstract: |
+    Numerical analysis accompanying the manuscript:
+
+        "Continuum Isotropy from the Spherical 5-Design Geometry of the 24-Cell-Lattice"
+
+    This code evaluates kinematic and elastic isotropy properties of
+    regular four-dimensional lattices, with emphasis on the hypercubic
+    lattice (Z^4) and the 24-cell lattice (D4).
+
+    All computations are performed in Euclidean signature using
+    nearest-neighbor central-force models. Results probe the infrared
+    (continuum) behavior relevant for emergent Lorentz-invariant
+    kinematics.
+author: Christoph Kovacs
+date: 2025-12-18
+---
+
+```{python}
+"""
+Figure 2: Scalar (Longitudinal) Mode Anisotropy
+
+This script analyzes the anisotropy of the scalar (longitudinal)
+acoustic branch of the lattice dynamical matrix
+
+    M_ab(k) = Σ_v [1 − cos(k · v)] v_a v_b
+
+For each propagation direction k̂, the longitudinal mode is identified
+as the largest eigenvalue ω_L²(k) of M_ab(k).
+
+The directional anisotropy is quantified by
+
+    δ_L(k) = (max_𝑘̂ ω_L² − min_𝑘̂ ω_L²) / ⟨ω_L²⟩
+
+evaluated as a function of k.
+
+The results show:
+    • Z⁴: Large, non-vanishing anisotropy even as k→0 (slope ≈ 0),
+      indicating direction-dependent sound speeds.
+    • A₄: Finite, non-vanishing infrared anisotropy (slope ≈ 0),
+      demonstrating that spherical 3-designs fail to ensure isotropic sound speeds.
+    • D₄: Strong suppression of anisotropy (slope ≈ 2),
+      with isotropic leading-order sound speed and residual rank-6 dispersive anisotropy.
+
+This figure demonstrates that only the 24-cell geometry yields an
+isotropic vacuum sound speed.
+"""
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import linregress
+import itertools
+
+# ============================================================
+# Configuration
+# ============================================================
+
+plt.rcParams.update({
+    "font.family": "sans-serif",
+    "font.size": 13,
+    "axes.labelsize": 14,
+    "axes.titlesize": 16,
+    "legend.fontsize": 11,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "lines.linewidth": 2.5
+})
+
+# ============================================================
+# Lattice definitions
+# ============================================================
+
+def normalize_neighbors(neigh):
+    neigh = np.asarray(neigh, dtype=float)
+    norms = np.linalg.norm(neigh, axis=1, keepdims=True) + 1e-30
+    return neigh / norms
+
+def neighbors_Z4():
+    vecs = []
+    for i in range(4):
+        v = np.zeros(4); v[i] = 1.0
+        vecs.append(v); vecs.append(-v)
+    return np.array(vecs, dtype=float)
+
+def neighbors_D4():
+    vecs = []
+    for i in range(4):
+        for j in range(i + 1, 4):
+            for s1 in (+1, -1):
+                for s2 in (+1, -1):
+                    v = np.zeros(4); v[i] = s1; v[j] = s2
+                    vecs.append(v)
+    return np.array(vecs, dtype=float)
+
+def neighbors_A4():
+    # 1. Generate 20 neighbors in 5D
+    base = [1, -1, 0, 0, 0]
+    perms = set(itertools.permutations(base))
+    vecs_5d = np.array(list(perms), dtype=float)
+    
+    # 2. Project to 4D orthonormal basis
+    basis = np.array([
+        [1/np.sqrt(2), -1/np.sqrt(2), 0, 0, 0],
+        [1/np.sqrt(6), 1/np.sqrt(6), -2/np.sqrt(6), 0, 0],
+        [1/np.sqrt(12), 1/np.sqrt(12), 1/np.sqrt(12), -3/np.sqrt(12), 0],
+        [1/np.sqrt(20), 1/np.sqrt(20), 1/np.sqrt(20), 1/np.sqrt(20), -4/np.sqrt(20)]
+    ])
+    return vecs_5d @ basis.T
+
+# ============================================================
+# Dynamical matrix (central-force / elasticity stencil)
+# M_ab(k) = Σ_v (1 - cos(k·v)) v_a v_b
+# ============================================================
+
+def dynamical_matrix(kvec, neighbors):
+    phase = neighbors @ kvec
+    # Numerically stable form: 1 - cos(x) = 2 sin^2(x/2)
+    w = 2.0 * np.sin(0.5 * phase)**2
+    return np.einsum("n,na,nb->ab", w, neighbors, neighbors)
+
+# ============================================================
+# Analysis Logic
+# ============================================================
+
+def random_directions(n, seed=0):
+    rng = np.random.default_rng(seed)
+    v = rng.normal(size=(n, 4))
+    v /= np.linalg.norm(v, axis=1, keepdims=True)
+    return v
+
+def scalar_anisotropy_eigen(neighbors, k_vals, directions):
+    """
+    Computes anisotropy of the Longitudinal eigenvalue.
+    """
+    delta_L = np.zeros_like(k_vals, dtype=float)
+
+    for ik, k in enumerate(k_vals):
+        lam_list = []
+        for d in directions:
+            kvec = k * d
+            M = dynamical_matrix(kvec, neighbors)
+            evals = np.linalg.eigvalsh(M)
+            # Largest eigenvalue = Longitudinal mode (stiffest)
+            lam_long = float(evals[-1]) 
+            lam_list.append(lam_long)
+
+        lam_list = np.array(lam_list)
+        mean_val = np.mean(lam_list) + 1e-30
+        delta_L[ik] = (np.max(lam_list) - np.min(lam_list)) / mean_val
+
+    return delta_L
+
+# ============================================================
+# Main execution
+# ============================================================
+
+# Use logspace for proper scaling visibility
+k_vals = np.logspace(-2.0, 0.0, 50)
+dirs = random_directions(300, seed=42)
+
+# Generate Lattices
+neigh_Z4 = normalize_neighbors(neighbors_Z4())
+neigh_A4 = normalize_neighbors(neighbors_A4())
+neigh_D4 = normalize_neighbors(neighbors_D4())
+
+print("Computing scalar mode anisotropy...")
+deltaL_Z4 = scalar_anisotropy_eigen(neigh_Z4, k_vals, dirs)
+deltaL_A4 = scalar_anisotropy_eigen(neigh_A4, k_vals, dirs)
+deltaL_D4 = scalar_anisotropy_eigen(neigh_D4, k_vals, dirs)
+
+# ============================================================
+# Plot
+# ============================================================
+
+# Reference anchoring point in IR
+k0 = 0.08
+
+# Anchor reference lines to actual data
+idx0 = np.argmin(np.abs(k_vals - k0))
+
+ref_Z4 = deltaL_Z4[idx0]
+ref_D4 = deltaL_D4[idx0]
+
+# IR window (match paper text)
+k_min_IR = 0.08
+k_max_IR = 0.60
+
+fig, ax = plt.subplots(figsize=(7.5, 5.5))
+
+# Plot Data
+ax.loglog(k_vals, deltaL_Z4, lw=2.5, color="#1f77b4", label=r"$\mathbb{Z}^4$ (Hypercubic)")
+ax.loglog(k_vals, deltaL_A4, lw=2.5, color="#2ca02c", label=r"$A_4$ (Simplex)")
+ax.loglog(k_vals, deltaL_D4, lw=2.5, color="#ff7f0e", label=r"$D_4$ (24-cell)")
+
+k_ref = np.array([k_vals[0], k_vals[-1]])
+
+# Reference lines
+
+## Slope 0 reference (constant anisotropy)
+ax.plot(
+    k_ref,
+    [ref_Z4, ref_Z4],
+    ":", color="gray", lw=4.0,
+    label="Slope 0 (anisotropic sound speed)"
+)
+## Slope 2 reference (rank-6 dispersive anisotropy)
+ax.plot(
+    k_ref,
+    ref_D4 * (k_ref / k0)**2,
+    "--", color="gray", lw=3.0,
+    label="Slope 2 (rank-6 dispersive anisotropy)"
+)
+
+ax.axvspan(
+    k_min_IR, k_max_IR,
+    color="grey", alpha=0.12,
+    label="IR continuum regime"
+)
+
+ax.set_xlabel(r"Wavenumber magnitude $k$")
+ax.set_ylabel(r"Longitudinal anisotropy $\delta_L(k)$")
+ax.set_title("Scalar (longitudinal) mode anisotropy")
+
+ax.legend(frameon=False, loc="lower right")
+ax.grid(True, which="both", ls="-", lw=0.5, alpha=0.3)
+ax.set_xlim(k_vals[0], k_vals[-1])
+ax.set_ylim(1e-16, 5.0)
+
+plt.tight_layout()
+plt.show()
+```

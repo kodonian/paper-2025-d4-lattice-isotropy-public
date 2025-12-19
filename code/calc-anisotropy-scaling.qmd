@@ -1,0 +1,246 @@
+---
+title: Continuum Isotropy from the Spherical 5-Design Geometry of the 24-Cell-Lattice
+abstract: |
+    Numerical analysis accompanying the manuscript:
+
+        "Continuum Isotropy from the Spherical 5-Design Geometry of the 24-Cell-Lattice"
+
+    This code evaluates kinematic and elastic isotropy properties of
+    regular four-dimensional lattices, with emphasis on the hypercubic
+    lattice (Z^4) and the 24-cell lattice (D4).
+
+    All computations are performed in Euclidean signature using
+    nearest-neighbor central-force models. Results probe the infrared
+    (continuum) behavior relevant for emergent Lorentz-invariant
+    kinematics.
+author: Christoph Kovacs
+date: 2025-12-18
+---
+
+```{python}
+"""
+Figure 1: Anisotropy Scaling of Discrete Dispersion Relations
+
+This script computes the directional anisotropy of the scalar lattice
+dispersion relation
+
+    ω²(k) ∝ Σ_v [1 − cos(k · v)]
+
+for regular 4D lattices: Z^4 (Hypercubic), A_4 (Simplex), and D_4 (24-cell).
+
+The relative anisotropy
+    δ(k) = (max_𝑘̂ ω² − min_𝑘̂ ω²) / ⟨ω²⟩
+
+is evaluated as a function of wave number magnitude k and averaged
+over propagation directions on S³.
+
+Theoretical expectations:
+    • Z⁴ (No Design):       δ(k) ~ k² (Leading order anisotropy)
+    • A₄ (3-Design):        δ(k) ~ k² (Fails at rank 4)
+    • D₄ (5-Design):        δ(k) ~ k⁴ (Isotropic at rank 4)
+
+This figure demonstrates that while the Simplex lattice is a 3-design,
+it fails to suppress the quartic anisotropy, unlike the 24-cell.
+"""
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import linregress
+import itertools
+
+# ============================================================
+# Configuration
+# ============================================================
+
+plt.rcParams.update({
+    "font.family": "sans-erif",
+    "font.size": 13,
+    "axes.labelsize": 14,
+    "axes.titlesize": 16,
+    "legend.fontsize": 12,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "lines.linewidth": 2.5
+})
+
+# ============================================================
+# Lattice definitions (Normalized)
+# ============================================================
+
+def normalize_neighbors(neigh):
+    neigh = np.asarray(neigh, dtype=float)
+    norms = np.linalg.norm(neigh, axis=1, keepdims=True) + 1e-30
+    return neigh / norms
+
+def neighbors_Z4():
+    """Hypercubic lattice neighbors: Permutations of (±1, 0, 0, 0)"""
+    vecs = []
+    for i in range(4):
+        v = np.zeros(4)
+        v[i] = 1.0
+        vecs.append(v)
+        vecs.append(-v)
+    return np.array(vecs, dtype=float)
+
+def neighbors_D4():
+    """24-cell lattice neighbors: Permutations of (±1, ±1, 0, 0)"""
+    vecs = []
+    for i in range(4):
+        for j in range(i + 1, 4):
+            for s1 in (+1, -1):
+                for s2 in (+1, -1):
+                    v = np.zeros(4)
+                    v[i] = s1
+                    v[j] = s2
+                    vecs.append(v)
+    return np.array(vecs, dtype=float)
+
+def neighbors_A4():
+    """
+    Simplex lattice neighbors: Permutations of (1, -1, 0, 0, 0).
+    Constructed in 5D and projected to 4D using an orthonormal basis.
+    """
+    # 1. Generate 20 neighbors in 5D
+    base = [1, -1, 0, 0, 0]
+    # set() handles duplicates from permutations of zeros
+    perms = set(itertools.permutations(base))
+    vecs_5d = np.array(list(perms), dtype=float)
+    
+    # 2. Project to 4D (remove the (1,1,1,1,1) direction)
+    # Using Helmert matrix rows or Gram-Schmidt on standard basis
+    # Basis vectors for the hyperplane sum(x)=0
+    basis = np.array([
+        [1/np.sqrt(2), -1/np.sqrt(2),       0,             0,             0],
+        [1/np.sqrt(6),  1/np.sqrt(6), -2/np.sqrt(6),       0,             0],
+        [1/np.sqrt(12), 1/np.sqrt(12),  1/np.sqrt(12), -3/np.sqrt(12),    0],
+        [1/np.sqrt(20), 1/np.sqrt(20),  1/np.sqrt(20),  1/np.sqrt(20), -4/np.sqrt(20)]
+    ])
+    
+    # Project: v_4d = v_5d . Basis^T
+    vecs_4d = vecs_5d @ basis.T
+    return vecs_4d
+
+# ============================================================
+# SCALAR DISPERSION CALCULATION
+# ============================================================
+
+def compute_dispersion_anisotropy(k_magnitudes, neighbors, n_directions=1000, seed=42):
+    rng = np.random.default_rng(seed)
+    
+    # Random directions on S3
+    directions = rng.normal(size=(n_directions, 4))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    
+    delta_list = []
+    
+    for k in k_magnitudes:
+        # Create full k-vectors: (N_dirs, 4)
+        k_vecs = k * directions
+        
+        # Phase arguments: k . v
+        dots = k_vecs @ neighbors.T
+        
+        # Dispersion relation: sum(1 - cos(x)) = sum(2 * sin^2(x/2))
+        sum_terms = np.sum(2.0 * np.sin(0.5 * dots)**2, axis=1)
+        omegas = np.sqrt(sum_terms)
+        
+        w_max = np.max(omegas)
+        w_min = np.min(omegas)
+        w_mean = np.mean(omegas)
+        
+        # Relative anisotropy
+        delta_list.append((w_max - w_min) / (w_mean + 1e-30))
+        
+    return np.array(delta_list)
+
+# ============================================================
+# Main Execution
+# ============================================================
+
+# Use logspace for proper scaling analysis
+k_vals = np.logspace(-2.2, 0.0, 160)
+
+# Generate and normalize lattices
+neigh_Z4 = normalize_neighbors(neighbors_Z4())
+neigh_A4 = normalize_neighbors(neighbors_A4())
+neigh_D4 = normalize_neighbors(neighbors_D4())
+
+print(f"Lattice Coordination Numbers:")
+print(f"Z4: {len(neigh_Z4)}")
+print(f"A4: {len(neigh_A4)}")
+print(f"D4: {len(neigh_D4)}")
+print("-" * 30)
+
+print("Computing scalar dispersion anisotropy...")
+delta_Z4 = compute_dispersion_anisotropy(k_vals, neigh_Z4)
+delta_A4 = compute_dispersion_anisotropy(k_vals, neigh_A4)
+delta_D4 = compute_dispersion_anisotropy(k_vals, neigh_D4)
+
+# ============================================================
+# Scaling Check & Reference Slopes
+# ============================================================
+
+k_min_IR = 0.08
+k_max_IR = 0.60
+mask_IR = (k_vals >= k_min_IR) & (k_vals <= k_max_IR)
+
+def powerlaw_fit(x, y):
+    logx = np.log(x)
+    logy = np.log(y)
+    slope, intercept, *_ = linregress(logx, logy)
+    return slope
+
+n_Z4 = powerlaw_fit(k_vals[mask_IR], delta_Z4[mask_IR])
+n_A4 = powerlaw_fit(k_vals[mask_IR], delta_A4[mask_IR])
+n_D4 = powerlaw_fit(k_vals[mask_IR], delta_D4[mask_IR])
+
+print("-" * 40)
+print(f"SLOPE CHECK (IR Region):")
+print(f"Z^4 slope (Expect ~2.0): {n_Z4:.2f}")
+print(f"A_4 slope (Expect ~2.0): {n_A4:.2f}")
+print(f"D_4 slope (Expect ~4.0): {n_D4:.2f}")
+print("-" * 40)
+
+# Anchor references for plotting guide lines
+k0 = 0.15
+idx0 = np.argmin(np.abs(k_vals - k0))
+d0_Z4 = delta_Z4[idx0]
+d0_D4 = delta_D4[idx0]
+
+k_ref = np.array([k_min_IR, k_max_IR])
+ref_k2 = d0_Z4 * (k_ref / k0)**2  # Slope 2 reference
+ref_k4 = d0_D4 * (k_ref / k0)**4  # Slope 4 reference
+
+# ============================================================
+# Plotting
+# ============================================================
+
+fig, ax = plt.subplots(figsize=(7.5, 5.5))
+
+# Data Plotting
+ax.loglog(k_vals, delta_Z4, lw=2.5, color="#1f77b4", label=r"$\mathbb{Z}^4$ (Hypercubic)")
+ax.loglog(k_vals, delta_A4, lw=2.5, color="#2ca02c", linestyle="-", label=r"$A_4$ (Simplex)") # Green
+ax.loglog(k_vals, delta_D4, lw=2.5, color="#ff7f0e", label=r"$D_4$ (24-cell)")
+
+# Reference Slopes
+ax.loglog(k_ref, ref_k2, "--", color="0.3", lw=5.0, alpha=0.7, label=r"Reference slope $\sim k^2$")
+ax.loglog(k_ref, ref_k4, ":",  color="0.15", lw=5.0, alpha=0.7, label=r"Reference slope $\sim k^4$")
+
+# Window
+ax.axvspan(k_min_IR, k_max_IR, color="grey", alpha=0.12, label="IR fit window")
+
+# Styling
+ax.set_xlabel(r"Wavenumber magnitude $k$")
+ax.set_ylabel(r"Relative dispersion anisotropy $\delta(\mathbf{k})$")
+ax.set_title("Scalar Dispersion Anisotropy Scaling")
+ax.legend(frameon=False, loc="lower right")
+
+ax.grid(True, which="major", ls="-", lw=0.5, alpha=0.6)
+ax.grid(True, which="minor", ls=":", lw=0.4, alpha=0.3)
+
+ax.set_xlim(k_vals[0], k_vals[-1])
+# Limit y-axis to relevant range (filtering machine noise floor if needed)
+ax.set_ylim(1e-16, 5.0)
+
+plt.tight_layout()
+plt.show()
+```
